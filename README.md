@@ -9,8 +9,13 @@ Honglin He<sup>1,2</sup>\*, [Zhuoqian Yang](https://yzhq97.github.io/)<sup>1,3</
 <br>\* equal contribution
 <br>† corresponding author
 
-[[project page](https://orthoplanes.github.io)] [[paper](https://orthoplanes.github.io)]
+[[project page](https://orthoplanes.github.io)] [[paper](https://arxiv.org/abs/2309.15830)]
 
 ## Updates
-- [26/09/2023] Technical report released!
+- [28/09/2023] Technical report released!
 - [13/07/2023] Our work has been accepted by ICCV2023!
+
+## TODO List
+- [x] Release technical report.
+- [ ] Release code.
+- [ ] Release pretrained models.
