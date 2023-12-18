@@ -5,7 +5,7 @@ Official PyTorch implementation of the ICCV 2023 paper:
 
 **OrthoPlanes: A Novel Representation for Better 3D-Awareness of GANs**<br>
 [Honglin He](https://dhlinv.github.io/)<sup>1,2</sup>\*, [Zhuoqian Yang](https://yzhq97.github.io/)<sup>1,3</sup>\*, Shikai Li<sup>1</sup>, [Bo Dai](http://daibo.info/)<sup>1</sup>, [Wayne Wu](https://wywu.github.io/)<sup>1</sup>† <br>
-<sup>1</sup>Shanghai AI Laboratory, <sup>2</sup>Tsinghua University, <sup>3</sup>School of Computer and Communication Sciences, EPFL
+<sup>1</sup>Shanghai AI Laboratory, <sup>2</sup>Tsinghua University, <sup>3</sup>EPFL
 <br>\* equal contribution
 <br>† corresponding author
 
