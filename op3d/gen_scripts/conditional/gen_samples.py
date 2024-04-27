@@ -9,12 +9,11 @@
 # its affiliates is strictly prohibited.
 
 """Generate images and shapes using pretrained network pickle."""
-
+from scipy.spatial.transform import Rotation
 import os
-import sys
-sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), '../../'))
-from typing import List, Optional, Tuple, Union
 import re
+from typing import List, Optional, Tuple, Union
+import pickle
 import click
 import dnnlib
 import numpy as np
@@ -22,23 +21,14 @@ import PIL.Image
 import torch
 from tqdm import tqdm
 import mrcfile
-import pickle
-import copy
-from training.dataset import ImageFolderDataset 
+# from training.dataset import CephSHHQDataset
+from training.dataset_cond_o import ImageFolderDataset
 import legacy
 from camera_utils import LookAtPoseSampler, FOV_to_intrinsics
 from torch_utils import misc
 from training.triplane import TriPlaneGenerator
-from training.orthoplanes import TriMultiPlaneGenerator
-from utils import (
-    generate_camera_params,
-    align_volume,
-    extract_mesh_with_marching_cubes,
-    xyz2mesh,
-    requires_grad,
-    create_mesh_renderer,
-    create_cameras
-)
+from training.kaolin_version import TriMultiPlaneGenerator
+
 #----------------------------------------------------------------------------
 
 def parse_range(s: Union[str, List]) -> List[int]:
@@ -124,6 +114,7 @@ def create_samples(N=256, voxel_origin=[0, 0, 0], cube_length=2.0):
 @click.option('--fov-deg', help='Field of View of camera in degrees', type=int, required=False, metavar='float', default=18.837, show_default=True)
 @click.option('--shape-format', help='Shape Format', type=click.Choice(['.mrc', '.ply']), default='.mrc')
 @click.option('--reload_modules', help='Overload persistent modules?', type=bool, required=False, metavar='BOOL', default=False, show_default=True)
+@click.option('--pose_id', help='Which pose used as condition', type=int, default=5)
 def generate_images(
     network_pkl: str,
     seeds: List[int],
@@ -136,6 +127,7 @@ def generate_images(
     shape_format: str,
     class_idx: Optional[int],
     reload_modules: bool,
+    pose_id: int,
 ):
     """Generate images using pretrained network pickle.
 
@@ -151,81 +143,103 @@ def generate_images(
     device = torch.device('cuda')
     with dnnlib.util.open_url(network_pkl) as f:
         G = legacy.load_network_pkl(f)['G_ema'].to(device) # type: ignore
-    G.rendering_kwargs['depth_resolution'] = 96
-    G.rendering_kwargs['depth_resolution_importance'] = 96
+
     # Specify reload_modules=True if you want code modifications to take effect; otherwise uses pickled code
     if reload_modules:
         print("Reloading Modules!")
-        print(G.rendering_kwargs)
         G_new = TriMultiPlaneGenerator(*G.init_args, **G.init_kwargs).eval().requires_grad_(False).to(device)
         misc.copy_params_and_buffers(G, G_new, require_all=True)
         G_new.neural_rendering_resolution = G.neural_rendering_resolution
-        # G.rendering_kwargs['']
         G_new.rendering_kwargs = G.rendering_kwargs
         G = G_new
 
-    cam2world_pose = LookAtPoseSampler.sample(3.14/2, 3.14/2, torch.tensor(G.rendering_kwargs.get('avg_camera_pivot', [0, 0, 0.2]), device=device), radius=2.7, device=device)
+    os.makedirs(outdir, exist_ok=True)
+
+    cam2world_pose = LookAtPoseSampler.sample(3.14/2, 3.14/2, torch.tensor([0, 0, 0.2], device=device), radius=2.7, device=device)
     intrinsics = FOV_to_intrinsics(fov_deg, device=device)
-    # Generate images.
+    raw_idx = pose_id
+    with open(f'./processed_SHHQ_pose_cond/{raw_idx + 1:06d}.pickle', 'rb') as f:
+        cond = pickle.load(f)
+    f.close()
+    for k, v in cond.items():
+        if isinstance(v, np.ndarray):
+            cond[k] = torch.from_numpy(v)
+        else:
+            cond[k].requires_grad_(False)
+    pose_cond = cond
+    for key, value in pose_cond.items():
+        if key == 'name':
+            continue
+        pose_cond[key] = value.unsqueeze(0)
     for seed_idx, seed in enumerate(seeds):
         print('Generating image for seed %d (%d/%d) ...' % (seed, seed_idx, len(seeds)))
-        cam_pivot = torch.tensor(G.rendering_kwargs.get('avg_camera_pivot', [0, 0, 0.2]), device=device)
-        cam_radius = G.rendering_kwargs.get('avg_camera_radius', 2.7)
-        conditioning_cam2world_pose = LookAtPoseSampler.sample(np.pi/2, np.pi/2, cam_pivot, radius=cam_radius, device=device)
-        conditioning_params = torch.cat([conditioning_cam2world_pose.reshape(-1, 16), intrinsics.reshape(-1, 9)], 1)
-
         z = torch.from_numpy(np.random.RandomState(seed).randn(1, G.z_dim)).to(device)
-        ws = G.mapping(z, conditioning_params, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff)
-        
         imgs = []
+        depth_imgs = []
         angle_p = -0.2
-        for angle_y, angle_p in [(.8, angle_p), (.6, angle_p), (.4, angle_p), (0, angle_p), (-.4, angle_p), (-.6, angle_p), (-.8, angle_p)]:
+        
+        for angle_y, angle_p in [(2., angle_p), (1.6, angle_p), (1., angle_p), (.8, angle_p), (.4, angle_p), (0, angle_p), (-.4, angle_p), (-.8, angle_p), (-1., angle_p), (-1.6, angle_p), (-2., angle_p)]:
+            cam_pivot = torch.tensor(G.rendering_kwargs.get('avg_camera_pivot', [0, 0, 0]), device=device)
+            cam_radius = G.rendering_kwargs.get('avg_camera_radius', 2.7)
             cam2world_pose = LookAtPoseSampler.sample(np.pi/2 + angle_y, np.pi/2 + angle_p, cam_pivot, radius=cam_radius, device=device)
+            conditioning_cam2world_pose = LookAtPoseSampler.sample(np.pi/2, np.pi/2, cam_pivot, radius=cam_radius, device=device)
             camera_params = torch.cat([cam2world_pose.reshape(-1, 16), intrinsics.reshape(-1, 9)], 1)
-            img = G.synthesis(ws, camera_params)['image']
+            conditioning_params = torch.cat([conditioning_cam2world_pose.reshape(-1, 16), intrinsics.reshape(-1, 9)], 1)
+            
+            ws = G.mapping(z, conditioning_params, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff)
+            img = G.synthesis(ws, camera_params, pose_cond)['image']
+            
             img = (img.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
             imgs.append(img)
+            
+        img = torch.cat(imgs, dim=2)
         
-        img = torch.cat(imgs, dim=2)    
-        PIL.Image.fromarray(img[0].cpu().numpy(), 'RGB').save(f'{outdir}/seed{seed:04d}_RGB.png')
-        
+        PIL.Image.fromarray(img[0].cpu().numpy(), 'RGB').save(f'{outdir}/seed{seed:04d}_RGB_coarse_pose_{n}.png')
         if shapes:
             # extract a shape.mrc with marching cubes. You can view the .mrc file using ChimeraX from UCSF.
             max_batch=1000000
-            z = z
-            samples, voxel_origin, voxel_size = create_samples(N=shape_res, voxel_origin=[0, 0, 0], cube_length=G.rendering_kwargs['box_warp'] * 1)#.reshape(1, -1, 3)
+            samples, voxel_origin, voxel_size = create_samples(N=shape_res, voxel_origin=[0, 0, 0], cube_length=1) #G.rendering_kwargs['box_warp'] * 1)#.reshape(1, -1, 3)
             samples = samples.to(z.device)
+            # samples[..., 1] -= 0.15
+            samples[..., 0] = -samples[..., 0]
+            # rot_mat = Rotation.from_euler('xyz', [0, np.pi, 0]).as_matrix()
+            # samples = samples @ torch.from_numpy(rot_mat).float().to(samples.device)
             sigmas = torch.zeros((samples.shape[0], samples.shape[1], 1), device=z.device)
             transformed_ray_directions_expanded = torch.zeros((samples.shape[0], max_batch, 3), device=z.device)
             transformed_ray_directions_expanded[..., -1] = -1
+            # transformed_ray_directions_expanded = transformed_ray_directions_expanded @ torch.from_numpy(rot_mat).float().to(samples.device)
 
             head = 0
             with tqdm(total = samples.shape[1]) as pbar:
                 with torch.no_grad():
                     while head < samples.shape[1]:
                         torch.manual_seed(0)
-                        sigma = G.sample(samples[:, head:head+max_batch], transformed_ray_directions_expanded[:, :samples.shape[1]-head], ws, conditioning_params, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, noise_mode='const')['sigma']
+                        sigma = G.sample(samples[:, head:head+max_batch], transformed_ray_directions_expanded[:, :samples.shape[1]-head], z, conditioning_params, pose_cond, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, noise_mode='const')['sigma']
                         sigmas[:, head:head+max_batch] = sigma
                         head += max_batch
                         pbar.update(max_batch)
 
             sigmas = sigmas.reshape((shape_res, shape_res, shape_res)).cpu().numpy()
-            sigmas = np.flip(sigmas, 0)
-            
+            # sigmas = np.flip(sigmas, -5)
+
+            # Trim the border of the extracted cube
             pad = int(30 * shape_res / 256)
+            pad_1 = int(pad * 3)
+            pad_2 = int(pad * 1.5)
+            # pad_3 = int(pad * )
             pad_value = -1000
-            sigmas[:pad] = pad_value
-            sigmas[-pad:] = pad_value
-            sigmas[:, :pad] = pad_value
-            sigmas[:, -pad:] = pad_value
-            sigmas[:, :, :pad] = pad_value
-            sigmas[:, :, -pad:] = pad_value
+            sigmas[:pad_2] = pad_value
+            sigmas[-pad_2:] = pad_value
+            sigmas[:, :pad_2] = pad_value
+            sigmas[:, -pad_2:] = pad_value
+            sigmas[:, :, :pad_1] = pad_value
+            sigmas[:, :, -pad_1:] = pad_value
 
             if shape_format == '.ply':
                 from shape_utils import convert_sdf_samples_to_ply
                 convert_sdf_samples_to_ply(np.transpose(sigmas, (2, 1, 0)), [0, 0, 0], 1, os.path.join(outdir, f'seed{seed:04d}.ply'), level=10)
             elif shape_format == '.mrc': # output mrc
-                with mrcfile.new_mmap(os.path.join(outdir, f'seed{seed:04d}_Geometry.mrc'), overwrite=True, shape=sigmas.shape, mrc_mode=2) as mrc:
+                with mrcfile.new_mmap(os.path.join(outdir, f'seed{seed:04d}_Geometry_pose_{n}.mrc'), overwrite=True, shape=sigmas.shape, mrc_mode=2) as mrc:
                     mrc.data[:] = sigmas
 #----------------------------------------------------------------------------
 

@@ -34,17 +34,29 @@ Pre-trained networks are stored as *.pkl files that can be referenced using loca
 | Orthoplanes-4-0 | SHHQ | [op3d-shhq-512-64-4plane-linear.pkl](https://drive.google.com/file/d/17wySk8Fh-mIB7FG2dSWqNbjELx7pBycC/view)| Unconditional (w/o cam-cond)|
 | Orthoplanes-4-6 | SHHQ | [op3d-shhq-512-64-4plane-frequency.pkl](https://drive.google.com/file/d/1eIHBWjOxa5AP2pcSrX780sGXvybdvT5c/view)| Unconditional (w/o cam-cond)|
 | Orthoplanes-8-10 | SHHQ | [op3d-shhq-512-64-8plane-frequency.pkl](https://drive.google.com/file/d/15dlp1r2UvrlIZHNvS02QcBhNbjJf_6Ba/view)| Unconditional (w/o cam-cond)|
-| Orthoplanes-8-10 | SHHQ | To be released | Conditional |
+| Orthoplanes-8-10 | SHHQ | [op3d-conditional-shhq.pkl](https://drive.google.com/file/d/1lPthIvB0GDSBenYAOrv8s1TAglnjtoNc/view) | Conditional |
+
+| Link of Processed SMPL parameters for SHHQ |
+| --------- |
+
+### [SHHQ-40K-SMPL](https://drive.google.com/file/d/1_-1EGGR9ogUZ4tXGR0wORFYpuiwjGSno/view?usp=drive_link)
 
 - Orthoplanes-$K$-$L$ means that using $K$ planes along each axis with $L$-power positional encoding for each plane.
 - Due to the acknowledgement of SHHQ, we will provide only smpl annotations for inference only. For training, we will provide the scripts and test-cases for unit-test only.
 
 ### Generating samples
 ```.bash
-# Generate images and shapes (as .mrc files) using pre-trained model
+# [Uncond] Generate images and shapes (as .mrc files) using pre-trained model
 
 python op3d/gen_samples/unconditional/gen_samples.py --outdir=out \
 --trunc=0.5 --shapes=true --seeds=0-3 --network=/path/to/*pkl
+
+
+[to use conditionl generation, unzip the processed zip first and rename it to "processed_SHHQ_pose_cond"]
+# [SMPL-Cond] Generate images and shapes (as .mrc files) using pre-trained model
+
+python op3d/gen_samples/conditional/gen_samples.py --outdir=out \
+--trunc=0.5 --shapes=true --seeds=0-3 --pose_id=5 --network=/path/to/*pkl
 ```
 
 To visualize a .mrc shape in ChimeraX (https://www.cgl.ucsf.edu/chimerax/):
@@ -55,19 +67,52 @@ To visualize a .mrc shape in ChimeraX (https://www.cgl.ucsf.edu/chimerax/):
 
 ## Training and Evaluation
 ### Preparing datasets
+#### 1. Uncondtional
 Please refer to EG3D (https://github.com/NVlabs/eg3d) to prepare FFHQ and AFHQv2-Cats dataset. 
 
-For SHHQ, we will provide the preparing scripts before 12.07, 2023.
+#### 2. SMPL-Condtional
+#### 2.1 prepare PARE (https://github.com/mkocabas/PARE) to infer pose conditions from real world data
+#### 2.2 prepare your own dataset, put all images for training in a folder like './raw_images'
+#### [Note: Ensure that all images are cropped to 512 x 512]
+#### 2.3 get pose conditions by
+```.bash
+[PARE Folder]
+python scripts/demo.py --image_folder ./raw_images --output_folder ./pose_pare
+```
+#### 2.4 prepare your dataset to eg3d format
+```.bash
+[OP3D Folder]
+[Crop each image to 512 x 512 before process]
+python train_scripts/export_data.py --image_folder ./raw_images --smpl_folder ./pose_pare 
+--output_folder ./processed_image --n_images 40000
+```
+
+#### 2.5 process PARE results
+```.bash
+[OP3D Folder]
+[n_poses should be equal to n_images]
+python train_scripts/export_pose.py --smpl_folder ./pose_pare 
+--output_folder ./processed_pose_cond --n_poses 40000
+```
 
 ### Training
 ```.bash
+[Unconditional]
 # Take FFHQ as an example, train from scratch with raw neural rendering resolution=64, using 8 GPUs.
-python op3d/train_scripts/train.py --outdir=./save/ffhq --cfg=ffhq --data=FFHQ_512.zip \ 
---batch=32 --gpus=8 --gamma=1 --gen_pose_cond=True
+python op3d/train_scripts/train_unconditional.py --outdir=./save/ffhq --cfg=ffhq --data=FFHQ_512.zip \ 
+--batch=32 --gpus=8 --gamma=1 --gen_pose_cond=True --plane_number=8 --fourier_L=10
 
 # To save the training time, set metics to none
-python op3d/train_scripts/train.py --outdir=./save/ffhq --cfg=ffhq --data=FFHQ_512.zip \ 
---batch=32 --gpus=8 --gamma=1 --gen_pose_cond=True --metrics=none
+python op3d/train_scripts/train_unconditional.py --outdir=./save/ffhq --cfg=ffhq --data=FFHQ_512.zip \ 
+--batch=32 --gpus=8 --gamma=1 --gen_pose_cond=True --plane_number=8 --fourier_L=10
+--metrics=none
+
+[Conditional]
+[replace the model and dataset in the train scipts]
+python op3d/train_scripts/train_conditional.py --outdir=./save/shhq_cond --cfg=shhq  --data=SHHQ_512.zip \
+--batch=32 --gpus=8 --gamma=20 --gen_pose_cond=False 
+--plane_number=8 --fourier_L=10
+--metrics=none
 ```
 
 ### Evaluation
@@ -78,6 +123,7 @@ python op3d/test_scripts/cal_metrics.py --network=op3d-ffhq-512-128-withc-12plan
 ```
 
 ## Updates
+- [27/04/2024] Update for Conditional Generation. [Data PreProcession, Inferenece, Training]
 - [29/11/2023] Code released!
 - [28/09/2023] Technical report released!
 - [13/07/2023] Our work has been accepted by ICCV2023!
@@ -86,10 +132,9 @@ python op3d/test_scripts/cal_metrics.py --network=op3d-ffhq-512-128-withc-12plan
 - [x] Release technical report.
 - [x] Release code for inference and training of unconditional generation.
 - [x] Release pretrained models for unconditional FFHQ, AFHQv2-Cats, SHHQ.
-- [ ] Release code for preparing SHHQ dataset.
-- [ ] Release code for smpl-pose conditional generation.
-- [ ] Release code for NeRF-overfitting Experiments.
-- [ ] Release GUI code.
+- [x] Release SMPL parameters for smpl-pose conditional generation.
+- [x] Release code for smpl-pose conditional generation.
+- [x] Release code for preparing SMPL parameters for custom dataset training.
 
 ## Citation
 
